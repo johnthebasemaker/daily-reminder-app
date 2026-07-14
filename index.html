@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <!-- iPhone / mobile viewport: fill the screen, respect the notch safe areas -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#8b5cf6" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#0f172a" media="(prefers-color-scheme: dark)" />
+  <meta name="description" content="Fully customizable daily reminder & alarm app. Works offline. Your data stays on your device." />
+
+  <title>Daily Reminder</title>
+
+  <!-- PWA: installable to the iPhone home screen -->
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Reminder" />
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- ============ HEADER ============ -->
+  <header class="app-header">
+    <button id="menuBtn" class="icon-btn" aria-label="Menu">&#9776;</button>
+    <h1 class="app-title">Daily Reminder</h1>
+    <button id="settingsBtn" class="icon-btn" aria-label="Settings">&#9881;</button>
+  </header>
+
+  <main class="app-main">
+    <!-- ============ "NOW" CARD: current time, current activity, elapsed/remaining ============ -->
+    <section class="now-card" id="nowCard">
+      <div class="now-top">
+        <div class="now-clock" id="nowClock">--:--</div>
+        <div class="now-progress-pct" id="completionPct">0/0 done</div>
+      </div>
+      <div class="now-activity" id="nowActivity">No activity right now</div>
+      <div class="now-meta" id="nowMeta"></div>
+      <div class="now-progressbar" aria-hidden="true"><div class="now-progressbar-fill" id="nowProgressFill"></div></div>
+    </section>
+
+    <!-- ============ NEXT UP: next 3 reminders ============ -->
+    <section class="nextup" id="nextUpSection">
+      <h2 class="section-label">Next up</h2>
+      <ul class="nextup-list" id="nextUpList"></ul>
+    </section>
+
+    <!-- ============ TIMELINE: all reminders, checkable ============ -->
+    <section class="timeline">
+      <div class="timeline-head">
+        <h2 class="section-label">Timeline</h2>
+        <span class="timeline-template" id="templateBadge"></span>
+      </div>
+      <ul class="timeline-list" id="timelineList"></ul>
+      <p class="empty-hint" id="emptyHint" hidden>No reminders yet. Tap <b>+ Add</b> or load a template.</p>
+    </section>
+  </main>
+
+  <!-- ============ BOTTOM ACTION BAR ============ -->
+  <nav class="action-bar">
+    <button class="action-btn primary" id="addBtn">+ Add</button>
+    <button class="action-btn" id="templatesBtn">Templates</button>
+    <button class="action-btn" id="resetChecksBtn">Reset&nbsp;✓</button>
+  </nav>
+
+  <!-- ============ ADD / EDIT REMINDER MODAL ============ -->
+  <div class="modal-backdrop" id="editModal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="editTitle">
+      <h2 id="editTitle" class="modal-title">Add reminder</h2>
+      <form id="editForm">
+        <label class="field">
+          <span>Time</span>
+          <input type="time" id="fldTime" required />
+        </label>
+        <label class="field">
+          <span>Activity</span>
+          <input type="text" id="fldActivity" placeholder="e.g. Morning Prayer" maxlength="80" required />
+        </label>
+        <label class="field">
+          <span>Duration <em>(optional)</em></span>
+          <input type="text" id="fldDuration" placeholder="e.g. 30 min" maxlength="40" />
+        </label>
+        <label class="field">
+          <span>Color</span>
+          <select id="fldColor"></select>
+        </label>
+        <div class="field-row">
+          <label class="toggle">
+            <input type="checkbox" id="fldNotify" checked />
+            <span>Notify me</span>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" id="fldSound" checked />
+            <span>Sound</span>
+          </label>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="action-btn danger" id="deleteReminderBtn" hidden>Delete</button>
+          <span class="spacer"></span>
+          <button type="button" class="action-btn" id="cancelEditBtn">Cancel</button>
+          <button type="submit" class="action-btn primary">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ============ TEMPLATES MODAL ============ -->
+  <div class="modal-backdrop" id="templateModal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="tmplTitle">
+      <h2 id="tmplTitle" class="modal-title">Load a template</h2>
+      <p class="modal-sub">Pick a preset schedule, then customize it however you like.</p>
+      <div class="template-list" id="templateList"></div>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button type="button" class="action-btn" id="closeTemplateBtn">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ SETTINGS / MENU MODAL ============ -->
+  <div class="modal-backdrop" id="settingsModal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="setTitle">
+      <h2 id="setTitle" class="modal-title">Settings</h2>
+
+      <div class="setting-group">
+        <span class="setting-label">Appearance</span>
+        <div class="segmented" id="themeSegmented">
+          <button data-theme="auto" class="seg active">Auto</button>
+          <button data-theme="light" class="seg">Light</button>
+          <button data-theme="dark" class="seg">Dark</button>
+        </div>
+      </div>
+
+      <label class="toggle-row">
+        <span>Enable notifications</span>
+        <input type="checkbox" id="setNotify" />
+      </label>
+      <label class="toggle-row">
+        <span>Notification sound</span>
+        <input type="checkbox" id="setSound" />
+      </label>
+
+      <div class="setting-group">
+        <span class="setting-label">Schedule</span>
+        <div class="btn-grid">
+          <button class="action-btn" id="exportBtn">Export JSON</button>
+          <button class="action-btn" id="importBtn">Import JSON</button>
+          <button class="action-btn" id="shareBtn">Share link</button>
+          <button class="action-btn danger" id="wipeBtn">Reset all</button>
+        </div>
+        <input type="file" id="importFile" accept="application/json,.json" hidden />
+      </div>
+
+      <p class="privacy-note">All data stays on this device (local storage only). Nothing is uploaded.</p>
+
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button type="button" class="action-btn" id="closeSettingsBtn">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Lightweight toast for confirmations -->
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
