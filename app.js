@@ -115,6 +115,15 @@ function loadState() {
     if (p && typeof p === "object") state.prefs = Object.assign(state.prefs, p);
   } catch (e) { /* ignore */ }
 
+  // Migrate v1 records (boolean `completed`) to the richer status model:
+  // upcoming | started | done | skipped, plus actual start/end timestamps.
+  state.reminders.forEach((r) => {
+    if (!r.status) r.status = r.completed ? "done" : "upcoming";
+    if (r.startedAt === undefined) r.startedAt = null;
+    if (r.endedAt === undefined) r.endedAt = null;
+    delete r.completed;
+  });
+
   // Keep the id counter ahead of any existing ids
   state.reminders.forEach((r) => { if (r.id >= nextId) nextId = r.id + 1; });
   sortReminders();
@@ -158,6 +167,18 @@ function humanGap(mins) {
   const h = Math.floor(mins / 60), m = mins % 60;
   return m ? `in ${h}h ${m}m` : `in ${h}h`;
 }
+function fmtTs(ts) { return fmtClock(new Date(ts)); }
+function elapsedMin(ts) { return Math.max(0, Math.floor((Date.now() - ts) / 60000)); }
+// "1.5 hours" / "45 min" → minutes (used for actual-vs-planned progress)
+function parseDurationMin(d) {
+  if (!d) return null;
+  let t = 0;
+  const h = d.match(/([\d.]+)\s*h/i);
+  const m = d.match(/(\d+)\s*m/i);
+  if (h) t += parseFloat(h[1]) * 60;
+  if (m) t += parseInt(m[1], 10);
+  return t || null;
+}
 
 // Given the sorted list, find which reminder is "current" (most recent past one)
 // and the list of upcoming ones for today.
@@ -196,6 +217,21 @@ function render() {
 function renderNow() {
   $("nowClock").textContent = fmtClock();
   const { current, upcoming } = computeCurrentAndNext();
+  const running = runningTask();
+  $("nowEndBtn").hidden = !running;
+
+  if (running) {
+    // A task is actively being tracked — show actual elapsed time.
+    $("nowActivity").textContent = running.activity;
+    const mins = elapsedMin(running.startedAt);
+    $("nowMeta").textContent =
+      `started ${fmtTs(running.startedAt)} · ${mins} min elapsed` +
+      (running.duration ? ` · planned ${running.duration}` : "");
+    const planned = parseDurationMin(running.duration);
+    $("nowProgressFill").style.width =
+      (planned ? Math.min(100, Math.round((mins / planned) * 100)) : 0) + "%";
+    return;
+  }
 
   if (!current) {
     $("nowActivity").textContent = upcoming.length ? "Nothing yet — first up soon" : "No activity right now";
@@ -244,7 +280,12 @@ function renderTimeline() {
   const { current } = computeCurrentAndNext();
   const sig = JSON.stringify({
     c: current ? current.id : 0,
-    r: state.reminders.map((r) => [r.id, r.time, r.activity, r.duration, r.color, r.completed, r.notificationEnabled, r.soundEnabled]),
+    m: selectMode,
+    sel: Array.from(selected),
+    r: state.reminders.map((r) => [
+      r.id, r.time, r.activity, r.duration, r.color, r.status,
+      r.status === "started" ? elapsedMin(r.startedAt) : 0, r.startedAt, r.endedAt,
+    ]),
   });
   if (sig === lastTimelineSig) return; // nothing changed → leave the DOM alone
   lastTimelineSig = sig;
@@ -255,39 +296,76 @@ function renderTimeline() {
 
   state.reminders.forEach((r) => {
     const li = document.createElement("li");
-    li.className = "reminder" + (r.completed ? " done" : "") + (current && current.id === r.id ? " current" : "");
+    li.className = "reminder"
+      + (r.status === "done" ? " done" : "")
+      + (r.status === "skipped" ? " skipped" : "")
+      + (r.status === "started" ? " running" : "")
+      + (current && current.id === r.id ? " current" : "")
+      + (selectMode && selected.has(r.id) ? " selected" : "");
     li.style.setProperty("--rc", COLORS[r.color] || COLORS.gray);
 
     const check = document.createElement("input");
     check.type = "checkbox";
     check.className = "reminder-check";
-    check.checked = !!r.completed;
+    check.checked = r.status === "done";
     check.setAttribute("aria-label", "Mark complete");
-    check.addEventListener("change", () => toggleComplete(r.id, check.checked));
+    check.addEventListener("change", () => quickToggle(r.id, check.checked));
 
     const body = document.createElement("div");
     body.className = "reminder-body";
     const isCurrent = current && current.id === r.id;
     body.innerHTML = `
-      <div class="reminder-time">${r.time}${isCurrent ? '<span class="current-tag">now</span>' : ""}</div>
+      <div class="reminder-time">${r.time}${isCurrent ? '<span class="current-tag">now</span>' : ""}${r.status === "started" ? '<span class="running-tag">running</span>' : ""}</div>
       <div class="reminder-name">${escapeHtml(r.activity)}</div>
-      ${r.duration ? `<div class="reminder-dur">${escapeHtml(r.duration)}</div>` : ""}`;
-    body.addEventListener("click", () => openEdit(r.id));
+      ${r.duration ? `<div class="reminder-dur">${escapeHtml(r.duration)}</div>` : ""}
+      ${actualLine(r)}`;
+    body.addEventListener("click", () => (selectMode ? toggleSelect(r.id) : openEdit(r.id)));
+    attachLongPress(li, r.id);
 
-    const badges = document.createElement("div");
-    badges.className = "reminder-badges";
-    badges.innerHTML =
-      (r.notificationEnabled ? "🔔" : "🔕") + (r.notificationEnabled && r.soundEnabled ? "🔊" : "");
+    // Right side: Start/End action (hidden while multi-selecting)
+    const side = document.createElement("div");
+    side.className = "reminder-side";
+    if (!selectMode) {
+      if (r.status === "upcoming") {
+        const b = document.createElement("button");
+        b.className = "task-btn start";
+        b.textContent = "Start";
+        b.addEventListener("click", () => startTask(r.id));
+        side.appendChild(b);
+      } else if (r.status === "started") {
+        const b = document.createElement("button");
+        b.className = "task-btn end";
+        b.textContent = "End";
+        b.addEventListener("click", () => endTask(r.id));
+        side.appendChild(b);
+      } else if (r.status === "skipped") {
+        side.innerHTML = '<span class="skip-label">skipped</span>';
+      }
+    }
 
-    li.append(check, body, badges);
+    li.append(check, body, side);
     list.appendChild(li);
   });
 }
 
+// One-line "actual vs planned" note under a task.
+function actualLine(r) {
+  if (r.status === "started" && r.startedAt)
+    return `<div class="reminder-actual">started ${fmtTs(r.startedAt)} · ${elapsedMin(r.startedAt)} min</div>`;
+  if (r.status === "done" && r.startedAt && r.endedAt) {
+    const mins = Math.max(1, Math.round((r.endedAt - r.startedAt) / 60000));
+    return `<div class="reminder-actual">actual ${fmtTs(r.startedAt)}–${fmtTs(r.endedAt)} · ${mins} min</div>`;
+  }
+  return "";
+}
+
 function renderCompletion() {
   const total = state.reminders.length;
-  const done = state.reminders.filter((r) => r.completed).length;
-  $("completionPct").textContent = total ? `${done}/${total} done` : "0/0 done";
+  const done = state.reminders.filter((r) => r.status === "done").length;
+  const skipped = state.reminders.filter((r) => r.status === "skipped").length;
+  $("completionPct").textContent = !total ? "0/0 done"
+    : skipped ? `${done}✓ · ${skipped}⤼ · ${total - done - skipped} left`
+    : `${done}/${total} done`;
 }
 
 function escapeHtml(s) {
@@ -352,7 +430,7 @@ function submitEdit(e) {
   if (!data.time || !data.activity) return;
 
   if (editingId == null) {
-    state.reminders.push(Object.assign({ id: genId(), completed: false }, data));
+    state.reminders.push(Object.assign({ id: genId(), status: "upcoming", startedAt: null, endedAt: null }, data));
   } else {
     const r = state.reminders.find((x) => x.id === editingId);
     Object.assign(r, data);
@@ -373,9 +451,21 @@ function deleteReminder() {
   toast("Deleted");
 }
 
-function toggleComplete(id, val) {
+// Checkbox quick-toggle: done ↔ upcoming (unchecking clears the tracked times).
+function quickToggle(id, checked) {
   const r = state.reminders.find((x) => x.id === id);
-  if (r) { r.completed = val; saveState(); render(); }
+  if (!r) return;
+  if (checked) {
+    if (r.status === "started") r.endedAt = Date.now();
+    r.status = "done";
+  } else {
+    r.status = "upcoming";
+    r.startedAt = null;
+    r.endedAt = null;
+  }
+  vibrate();
+  saveState();
+  render();
 }
 
 /* ---------- 6. Templates ---------- */
@@ -409,7 +499,9 @@ function makeReminderFromTemplate(t) {
     color: COLORS[t.color] ? t.color : "gray",
     notificationEnabled: true,
     soundEnabled: true,
-    completed: false,
+    status: "upcoming",
+    startedAt: null,
+    endedAt: null,
   };
 }
 
@@ -576,6 +668,7 @@ function checkDueReminders() {
   const now = nowMinutes();
   state.reminders.forEach((r) => {
     if (!r.notificationEnabled) return;
+    if (r.status === "done" || r.status === "skipped") return; // already handled
     const t = toMinutes(r.time);
     const key = r.id + "@" + r.time;
     // Fire within a 1-minute window of the scheduled time, once per day.
@@ -592,8 +685,8 @@ function maybeMidnightReset() {
   const today = todayStr();
   const last = localStorage.getItem(LS.lastReset);
   if (last !== today) {
-    // New day: clear all completed flags and the "already fired" tracker.
-    state.reminders.forEach((r) => { r.completed = false; });
+    // New day: reset every task to upcoming and clear the "already fired" tracker.
+    state.reminders.forEach((r) => { r.status = "upcoming"; r.startedAt = null; r.endedAt = null; });
     firedToday = new Set();
     localStorage.setItem(LS.lastReset, today);
     saveState();
@@ -630,6 +723,173 @@ function importFromUrlIfPresent() {
   return false;
 }
 
+/* ---------- Task flow: start/end, catch-up, next prompt, summary ---------- */
+
+let selectMode = false;
+const selected = new Set();
+let pendingStartId = null;
+let pendingNextId = null;
+
+function findRem(id) { return state.reminders.find((x) => x.id === id); }
+function runningTask() { return state.reminders.find((x) => x.status === "started"); }
+
+// Haptic tap where supported (Android; iOS doesn't expose vibration to web apps).
+function vibrate(ms = 15) {
+  try { if (navigator.vibrate) navigator.vibrate(ms); } catch (e) { /* unsupported */ }
+}
+
+// Start a task. If earlier tasks were never marked, offer the catch-up sheet first.
+function startTask(id) {
+  const target = findRem(id);
+  if (!target) return;
+  const earlier = state.reminders.filter(
+    (x) => x.status === "upcoming" && x.id !== id && toMinutes(x.time) < toMinutes(target.time)
+  );
+  if (earlier.length) { openCatchUp(earlier, id); return; }
+  reallyStart(id);
+}
+
+function reallyStart(id) {
+  // Only one task runs at a time — end any other running task first.
+  const running = runningTask();
+  if (running && running.id !== id) {
+    running.status = "done";
+    running.endedAt = Date.now();
+    toast(`Ended: ${running.activity}`);
+  }
+  const r = findRem(id);
+  r.status = "started";
+  r.startedAt = Date.now();
+  r.endedAt = null;
+  vibrate();
+  saveState();
+  render();
+}
+
+function endTask(id) {
+  const r = findRem(id);
+  if (!r || r.status !== "started") return;
+  r.status = "done";
+  r.endedAt = Date.now();
+  vibrate(30);
+  saveState();
+  render();
+
+  // Offer to start the next upcoming task, or show the day summary.
+  const idx = state.reminders.indexOf(r);
+  const next = state.reminders.slice(idx + 1).find((x) => x.status === "upcoming");
+  if (next) openNextPrompt(next);
+  else if (!state.reminders.some((x) => x.status === "upcoming" || x.status === "started")) openSummary();
+}
+
+/* --- catch-up sheet (earlier unmarked tasks: done or skip?) --- */
+
+function openCatchUp(earlier, targetId) {
+  pendingStartId = targetId;
+  const ul = $("catchupList");
+  ul.innerHTML = "";
+  earlier.forEach((r) => {
+    const li = document.createElement("li");
+    li.className = "catchup-item";
+    li.innerHTML = `
+      <input type="checkbox" class="reminder-check" data-id="${r.id}" id="cu-${r.id}">
+      <label for="cu-${r.id}"><b>${r.time}</b> ${escapeHtml(r.activity)}</label>`;
+    ul.appendChild(li);
+  });
+  showModal("catchupModal");
+}
+
+function confirmCatchUp() {
+  document.querySelectorAll("#catchupList input").forEach((cb) => {
+    const r = findRem(+cb.dataset.id);
+    if (r && r.status === "upcoming") r.status = cb.checked ? "done" : "skipped";
+  });
+  hideModal("catchupModal");
+  const id = pendingStartId;
+  pendingStartId = null;
+  if (id != null) reallyStart(id); // saves + renders
+}
+
+/* --- "start next?" prompt --- */
+
+function openNextPrompt(next) {
+  pendingNextId = next.id;
+  $("nextSheetDesc").textContent =
+    `${next.activity} · scheduled ${next.time}` + (next.duration ? ` · ${next.duration}` : "");
+  showModal("nextSheet");
+}
+
+/* --- end-of-day summary --- */
+
+function openSummary() {
+  const done = state.reminders.filter((r) => r.status === "done").length;
+  const skipped = state.reminders.filter((r) => r.status === "skipped").length;
+  let trackedMs = 0;
+  state.reminders.forEach((r) => { if (r.startedAt && r.endedAt) trackedMs += r.endedAt - r.startedAt; });
+  const h = Math.floor(trackedMs / 3600000), m = Math.round((trackedMs % 3600000) / 60000);
+  $("summaryBody").innerHTML = `
+    <div class="summary-row"><span>✓ Completed</span><b>${done}</b></div>
+    <div class="summary-row"><span>⤼ Skipped</span><b>${skipped}</b></div>
+    <div class="summary-row"><span>⏱ Time tracked</span><b>${h ? h + "h " : ""}${m} min</b></div>`;
+  showModal("summaryModal");
+}
+
+/* --- multi-select mode (bulk done / skip) --- */
+
+function enterSelectMode() {
+  selectMode = true;
+  selected.clear();
+  $("selBar").hidden = false;
+  $("mainBar").hidden = true;
+  $("selectModeBtn").textContent = "Cancel";
+  render();
+}
+
+function exitSelectMode() {
+  selectMode = false;
+  selected.clear();
+  $("selBar").hidden = true;
+  $("mainBar").hidden = false;
+  $("selectModeBtn").textContent = "Select";
+  render();
+}
+
+function toggleSelect(id) {
+  if (selected.has(id)) selected.delete(id);
+  else selected.add(id);
+  render();
+}
+
+function bulkMark(status) {
+  if (!selected.size) { toast("Nothing selected"); return; }
+  let n = 0;
+  selected.forEach((id) => {
+    const r = findRem(id);
+    if (r) {
+      if (status === "done" && r.status === "started") r.endedAt = Date.now();
+      r.status = status;
+      n++;
+    }
+  });
+  vibrate();
+  saveState();
+  exitSelectMode(); // also renders
+  toast(`${n} marked ${status === "done" ? "done" : "skipped"}`);
+}
+
+// Long-press a task card to enter selection mode (standard mobile pattern).
+function attachLongPress(el, id) {
+  let timer = null;
+  el.addEventListener("pointerdown", () => {
+    timer = setTimeout(() => {
+      if (!selectMode) enterSelectMode();
+      toggleSelect(id);
+    }, 500);
+  });
+  ["pointerup", "pointerleave", "pointercancel"].forEach((ev) =>
+    el.addEventListener(ev, () => clearTimeout(timer)));
+}
+
 /* ---------- Modal + toast helpers ---------- */
 
 function showModal(id) { $(id).hidden = false; }
@@ -650,7 +910,7 @@ function wireEvents() {
   $("addBtn").addEventListener("click", openAdd);
   $("templatesBtn").addEventListener("click", () => { renderTemplateList(); showModal("templateModal"); });
   $("resetChecksBtn").addEventListener("click", () => {
-    state.reminders.forEach((r) => (r.completed = false));
+    state.reminders.forEach((r) => { r.status = "upcoming"; r.startedAt = null; r.endedAt = null; });
     saveState(); render(); toast("Checklist reset");
   });
 
@@ -680,6 +940,22 @@ function wireEvents() {
   $("importFile").addEventListener("change", (e) => { if (e.target.files[0]) importSchedule(e.target.files[0]); e.target.value = ""; });
   $("shareBtn").addEventListener("click", shareLink);
   $("wipeBtn").addEventListener("click", wipeAll);
+
+  // Task-flow controls
+  $("selectModeBtn").addEventListener("click", () => (selectMode ? exitSelectMode() : enterSelectMode()));
+  $("selDoneBtn").addEventListener("click", () => bulkMark("done"));
+  $("selSkipBtn").addEventListener("click", () => bulkMark("skipped"));
+  $("selCancelBtn").addEventListener("click", exitSelectMode);
+  $("catchupCancelBtn").addEventListener("click", () => { pendingStartId = null; hideModal("catchupModal"); });
+  $("catchupConfirmBtn").addEventListener("click", confirmCatchUp);
+  $("nextStartBtn").addEventListener("click", () => {
+    hideModal("nextSheet");
+    if (pendingNextId != null) startTask(pendingNextId);
+    pendingNextId = null;
+  });
+  $("nextLaterBtn").addEventListener("click", () => { pendingNextId = null; hideModal("nextSheet"); });
+  $("summaryCloseBtn").addEventListener("click", () => hideModal("summaryModal"));
+  $("nowEndBtn").addEventListener("click", () => { const r = runningTask(); if (r) endTask(r.id); });
 
   // Tap the dark backdrop to dismiss a modal
   document.querySelectorAll(".modal-backdrop").forEach((bd) => {

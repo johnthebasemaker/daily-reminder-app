@@ -11,11 +11,23 @@ no framework. Just open `index.html`.
 
 ## Features
 
+> ⚠️ **Before every deploy:** bump `CACHE_VERSION` in `service-worker.js`
+> (currently `daily-reminder-v2`) whenever any file changes, or returning
+> users will keep seeing the old cached version.
+
 - **3 preset templates** — KSA 12-Hour Shift, Student, 9-to-5 Office (load & replace, or merge).
-- **Now card** — current time, current activity, minutes elapsed / remaining, live progress bar.
+- **Task flow (Start / End)** — tap **Start** when you begin a task and **End** when you finish;
+  the app records the **actual** start/end times and shows them next to the planned slot
+  (e.g. `actual 21:11–21:38 · 27 min`). Only one task runs at a time.
+- **Start-next prompt** — ending a task offers to start the next one with a single tap.
+- **Catch-up sheet** — if you start a later task while earlier ones were never marked, the app
+  asks which of them you actually did; the rest are marked **skipped** (distinct from done).
+- **Multi-select** — long-press a task (or tap *Select*) to bulk-mark several as done or skipped.
+- **End-of-day summary** — after the last task: completed count, skipped count, total tracked time.
+- **Now card** — current time, current/running activity, minutes elapsed / remaining, live progress bar.
 - **Next up** — the next 3 reminders with countdowns.
 - **Color-coded timeline** — all activities for the day; the current one is highlighted with a `NOW` badge.
-- **Checklist** — tick off activities; completion counter (`8/11 done`); auto-resets at midnight.
+- **Checklist** — tick off activities; honest completion counter (`7✓ · 2⤼ · 2 left`); auto-resets at midnight.
 - **Add / edit / delete** reminders (time, activity, duration, color, notify, sound). Auto-sorted by time.
 - **Notifications + sound** — browser push notifications at the scheduled minute, plus a built-in chime
   (generated with the Web Audio API, so it works offline). Sleep activities are skipped automatically.

@@ -4,7 +4,7 @@
    clients to pick up the new version.
    ============================================================ */
 
-const CACHE_VERSION = "daily-reminder-v1";
+const CACHE_VERSION = "daily-reminder-v2";
 const ASSETS = [
   ".",
   "index.html",

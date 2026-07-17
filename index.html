@@ -38,6 +38,7 @@
       <div class="now-activity" id="nowActivity">No activity right now</div>
       <div class="now-meta" id="nowMeta"></div>
       <div class="now-progressbar" aria-hidden="true"><div class="now-progressbar-fill" id="nowProgressFill"></div></div>
+      <button id="nowEndBtn" class="now-end" hidden>&#9632; End current task</button>
     </section>
 
     <!-- ============ NEXT UP: next 3 reminders ============ -->
@@ -50,7 +51,10 @@
     <section class="timeline">
       <div class="timeline-head">
         <h2 class="section-label">Timeline</h2>
-        <span class="timeline-template" id="templateBadge"></span>
+        <div class="timeline-head-right">
+          <span class="timeline-template" id="templateBadge"></span>
+          <button class="mini-btn" id="selectModeBtn">Select</button>
+        </div>
       </div>
       <ul class="timeline-list" id="timelineList"></ul>
       <p class="empty-hint" id="emptyHint" hidden>No reminders yet. Tap <b>+ Add</b> or load a template.</p>
@@ -58,10 +62,17 @@
   </main>
 
   <!-- ============ BOTTOM ACTION BAR ============ -->
-  <nav class="action-bar">
+  <nav class="action-bar" id="mainBar">
     <button class="action-btn primary" id="addBtn">+ Add</button>
     <button class="action-btn" id="templatesBtn">Templates</button>
     <button class="action-btn" id="resetChecksBtn">Reset&nbsp;✓</button>
+  </nav>
+
+  <!-- Selection-mode action bar (shown while multi-selecting tasks) -->
+  <nav class="action-bar sel-bar" id="selBar" hidden>
+    <button class="action-btn primary" id="selDoneBtn">Mark done</button>
+    <button class="action-btn" id="selSkipBtn">Skip</button>
+    <button class="action-btn" id="selCancelBtn">Cancel</button>
   </nav>
 
   <!-- ============ ADD / EDIT REMINDER MODAL ============ -->
@@ -157,6 +168,45 @@
       <div class="modal-actions">
         <span class="spacer"></span>
         <button type="button" class="action-btn" id="closeSettingsBtn">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ CATCH-UP MODAL (missed earlier tasks) ============ -->
+  <div class="modal-backdrop" id="catchupModal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="catchupTitle">
+      <h2 id="catchupTitle" class="modal-title">Catch up</h2>
+      <p class="modal-sub">These earlier tasks weren't marked. Tick the ones you actually did — the rest will be marked as skipped.</p>
+      <ul class="catchup-list" id="catchupList"></ul>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button type="button" class="action-btn" id="catchupCancelBtn">Cancel</button>
+        <button type="button" class="action-btn primary" id="catchupConfirmBtn">Confirm &amp; start</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ "START NEXT?" SHEET ============ -->
+  <div class="modal-backdrop" id="nextSheet" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="nextSheetTitle">
+      <h2 id="nextSheetTitle" class="modal-title">Start next task?</h2>
+      <p class="modal-sub" id="nextSheetDesc"></p>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button type="button" class="action-btn" id="nextLaterBtn">Not now</button>
+        <button type="button" class="action-btn primary" id="nextStartBtn">Start</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ END-OF-DAY SUMMARY ============ -->
+  <div class="modal-backdrop" id="summaryModal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="summaryTitle">
+      <h2 id="summaryTitle" class="modal-title">Day complete 🎉</h2>
+      <div class="summary-body" id="summaryBody"></div>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button type="button" class="action-btn primary" id="summaryCloseBtn">Nice</button>
       </div>
     </div>
   </div>
