@@ -24,6 +24,12 @@ const COLORS = {
   gray: "#6b7280", darkgray: "#374151", red: "#ef4444", teal: "#14b8a6",
 };
 
+// Day-of-week indexes match JavaScript's Date.getDay() (0 = Sunday).
+const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];
+const WEEKDAYS = [1, 2, 3, 4, 5];
+const DAY_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const DAY_LETTER = ["S", "M", "T", "W", "T", "F", "S"];
+
 const TEMPLATES = [
   {
     name: "KSA Work Schedule (12-Hour Shift)",
@@ -63,17 +69,18 @@ const TEMPLATES = [
     ],
   },
   {
+    // Work blocks default to weekdays only so this template demonstrates recurrence.
     name: "9-to-5 Office Worker",
-    desc: "Commute, focused work blocks, family time.",
+    desc: "Commute, focused work blocks, family time. Work blocks are Mon-Fri.",
     reminders: [
       { time: "06:00", activity: "Morning Routine & Prayer", duration: "45 min", color: "purple" },
-      { time: "06:45", activity: "Commute to Office", duration: "30 min", color: "cyan" },
-      { time: "09:00", activity: "Work Block 1", duration: "3 hours", color: "blue" },
-      { time: "12:00", activity: "Lunch Break", duration: "1 hour", color: "green" },
-      { time: "13:00", activity: "Work Block 2", duration: "3 hours", color: "blue" },
-      { time: "16:00", activity: "Coffee Break + Walk", duration: "30 min", color: "yellow" },
-      { time: "16:30", activity: "Work Block 3", duration: "1.5 hours", color: "blue" },
-      { time: "17:45", activity: "Commute Home", duration: "30 min", color: "cyan" },
+      { time: "06:45", activity: "Commute to Office", duration: "30 min", color: "cyan", days: WEEKDAYS },
+      { time: "09:00", activity: "Work Block 1", duration: "3 hours", color: "blue", days: WEEKDAYS },
+      { time: "12:00", activity: "Lunch Break", duration: "1 hour", color: "green", days: WEEKDAYS },
+      { time: "13:00", activity: "Work Block 2", duration: "3 hours", color: "blue", days: WEEKDAYS },
+      { time: "16:00", activity: "Coffee Break + Walk", duration: "30 min", color: "yellow", days: WEEKDAYS },
+      { time: "16:30", activity: "Work Block 3", duration: "1.5 hours", color: "blue", days: WEEKDAYS },
+      { time: "17:45", activity: "Commute Home", duration: "30 min", color: "cyan", days: WEEKDAYS },
       { time: "18:15", activity: "Dinner & Family Time", duration: "1.5 hours", color: "orange" },
       { time: "19:45", activity: "Personal Projects / Hobbies", duration: "1 hour", color: "lightblue" },
       { time: "20:45", activity: "Evening Worship/Reading", duration: "30 min", color: "purple" },
@@ -89,14 +96,22 @@ const LS = {
   template: "selectedTemplate",
   prefs: "userPreferences",
   lastReset: "lastResetDate",
+  history: "dailyHistory", // { "YYYY-MM-DD": [{id, time, activity, status, startedAt, endedAt}] }
 };
+const HISTORY_KEEP_DAYS = 90;
 
 /* ---------- 2. State + persistence ---------- */
 
 let state = {
   reminders: [],          // array of reminder objects
   templateName: "",       // name of currently-loaded template
-  prefs: { theme: "auto", notificationEnabled: false, soundEnabled: true },
+  prefs: {
+    theme: "auto",
+    notificationEnabled: false,
+    soundEnabled: true,
+    dndStart: null,       // "HH:MM" or null; when set, alerts are silenced within window
+    dndEnd: null,
+  },
 };
 
 let nextId = 1;
@@ -117,10 +132,15 @@ function loadState() {
 
   // Migrate v1 records (boolean `completed`) to the richer status model:
   // upcoming | started | done | skipped, plus actual start/end timestamps.
+  // v3 adds days-of-week, notes, preAlertMin, snoozedUntil.
   state.reminders.forEach((r) => {
     if (!r.status) r.status = r.completed ? "done" : "upcoming";
     if (r.startedAt === undefined) r.startedAt = null;
     if (r.endedAt === undefined) r.endedAt = null;
+    if (!Array.isArray(r.days)) r.days = ALL_DAYS.slice();
+    if (typeof r.notes !== "string") r.notes = "";
+    if (typeof r.preAlertMin !== "number") r.preAlertMin = 0;
+    if (r.snoozedUntil === undefined) r.snoozedUntil = null;
     delete r.completed;
   });
 
@@ -179,19 +199,72 @@ function parseDurationMin(d) {
   if (m) t += parseInt(m[1], 10);
   return t || null;
 }
+function dowToday(d = new Date()) { return d.getDay(); }
+// Does this reminder apply on the given day-of-week? Empty days array = every day.
+function appliesOn(r, dow) { return !r.days || !r.days.length || r.days.includes(dow); }
+function appliesToday(r) { return appliesOn(r, dowToday()); }
+
+// Compute the end-time of a reminder from its start + parsed duration.
+// Returns "HH:MM" or null.
+function endTimeStr(r) {
+  const mins = parseDurationMin(r.duration);
+  if (!mins) return null;
+  const end = (toMinutes(r.time) + mins) % (24 * 60);
+  return String(Math.floor(end / 60)).padStart(2, "0") + ":" + String(end % 60).padStart(2, "0");
+}
+
+// A short human badge for the days-of-week (e.g. "Mon–Fri", "Weekends", "MWF").
+function daysBadge(days) {
+  if (!days || days.length === 0 || days.length === 7) return null;
+  const sorted = days.slice().sort((a, b) => a - b);
+  if (sorted.join() === "1,2,3,4,5") return "Mon–Fri";
+  if (sorted.join() === "0,6") return "Weekends";
+  return sorted.map((d) => DAY_LETTER[d]).join("");
+}
+
+// Does this reminder overlap in time (today) with any other applicable one?
+function hasOverlap(r) {
+  const s = toMinutes(r.time);
+  const dur = parseDurationMin(r.duration);
+  if (!dur) return false;
+  const e = s + dur;
+  return state.reminders.some((o) => {
+    if (o.id === r.id || !appliesToday(o)) return false;
+    const os = toMinutes(o.time);
+    const od = parseDurationMin(o.duration);
+    // Compare as time blocks. If no duration on the other, treat as instant.
+    const oe = od ? os + od : os;
+    return s < oe && os < e;
+  });
+}
+
+// Is the current minute-of-day inside the user's DND window? Handles cross-midnight.
+function isInDND(now = nowMinutes()) {
+  const { dndStart, dndEnd } = state.prefs;
+  if (!dndStart || !dndEnd) return false;
+  const s = toMinutes(dndStart), e = toMinutes(dndEnd);
+  if (s === e) return false;
+  return s < e ? (now >= s && now < e) : (now >= s || now < e);
+}
 
 // Given the sorted list, find which reminder is "current" (most recent past one)
-// and the list of upcoming ones for today.
+// and the list of upcoming ones for today. Filters by per-reminder days-of-week.
 function computeCurrentAndNext() {
   const now = nowMinutes();
   let current = null;
   const upcoming = [];
   for (const r of state.reminders) {
+    if (!appliesToday(r)) continue;
     const t = toMinutes(r.time);
     if (t <= now) current = r;      // last one that has already started
     else upcoming.push(r);          // still to come today
   }
   return { current, upcoming };
+}
+
+// The reminders that apply today, in time order. Used by the timeline.
+function todaysReminders() {
+  return state.reminders.filter(appliesToday);
 }
 
 // Minutes until the current activity ends = start of the next reminder.
@@ -278,13 +351,15 @@ let lastTimelineSig = null;
 
 function renderTimeline() {
   const { current } = computeCurrentAndNext();
+  const rendered = todaysReminders();
   const sig = JSON.stringify({
     c: current ? current.id : 0,
     m: selectMode,
     sel: Array.from(selected),
-    r: state.reminders.map((r) => [
+    r: rendered.map((r) => [
       r.id, r.time, r.activity, r.duration, r.color, r.status,
       r.status === "started" ? elapsedMin(r.startedAt) : 0, r.startedAt, r.endedAt,
+      r.notes, r.preAlertMin, (r.days || []).join(","), r.snoozedUntil,
     ]),
   });
   if (sig === lastTimelineSig) return; // nothing changed → leave the DOM alone
@@ -292,10 +367,30 @@ function renderTimeline() {
 
   const list = $("timelineList");
   list.innerHTML = "";
-  $("emptyHint").hidden = state.reminders.length > 0;
-
-  state.reminders.forEach((r) => {
+  const anyToday = rendered.length > 0;
+  const anyAtAll = state.reminders.length > 0;
+  $("emptyHint").hidden = anyAtAll;
+  if (anyAtAll && !anyToday) {
+    // No reminders scheduled for today — but the schedule isn't empty
     const li = document.createElement("li");
+    li.className = "empty-hint";
+    li.style.padding = "20px 4px";
+    li.style.textAlign = "center";
+    li.style.color = "var(--text-dim)";
+    li.textContent = `No reminders scheduled for ${DAY_SHORT[dowToday()]}.`;
+    list.appendChild(li);
+    return;
+  }
+
+  rendered.forEach((r) => {
+    // A wrapper is needed for swipe: it clips the reveal-behind action layers.
+    const wrap = document.createElement("li");
+    wrap.className = "reminder-wrap";
+    wrap.innerHTML = `
+      <div class="swipe-action done">✓ Done</div>
+      <div class="swipe-action delete">Delete</div>`;
+
+    const li = document.createElement("div");
     li.className = "reminder"
       + (r.status === "done" ? " done" : "")
       + (r.status === "skipped" ? " skipped" : "")
@@ -314,13 +409,31 @@ function renderTimeline() {
     const body = document.createElement("div");
     body.className = "reminder-body";
     const isCurrent = current && current.id === r.id;
+    const end = endTimeStr(r);
+    const overlap = hasOverlap(r) && r.status !== "done" && r.status !== "skipped";
+    const streak = computeStreak(r.id);
+    const badge = daysBadge(r.days);
     body.innerHTML = `
-      <div class="reminder-time">${r.time}${isCurrent ? '<span class="current-tag">now</span>' : ""}${r.status === "started" ? '<span class="running-tag">running</span>' : ""}</div>
+      <div class="reminder-time">
+        ${r.time}${end ? ` <span class="reminder-endtime">→ ${end}</span>` : ""}
+        ${isCurrent ? '<span class="current-tag">now</span>' : ""}
+        ${r.status === "started" ? '<span class="running-tag">running</span>' : ""}
+      </div>
       <div class="reminder-name">${escapeHtml(r.activity)}</div>
       ${r.duration ? `<div class="reminder-dur">${escapeHtml(r.duration)}</div>` : ""}
-      ${actualLine(r)}`;
+      ${r.notes ? `<div class="reminder-notes">${escapeHtml(r.notes)}</div>` : ""}
+      ${actualLine(r)}
+      ${(badge || overlap || streak >= 3 || r.preAlertMin > 0 || r.snoozedUntil) ? `
+        <div class="reminder-tags">
+          ${badge ? `<span class="tag days">${badge}</span>` : ""}
+          ${overlap ? `<span class="tag overlap" title="Overlaps with another reminder">⚠ overlap</span>` : ""}
+          ${streak >= 3 ? `<span class="tag streak">🔥 ${streak}d streak</span>` : ""}
+          ${r.preAlertMin > 0 ? `<span class="tag prealert">−${r.preAlertMin}m</span>` : ""}
+          ${r.snoozedUntil ? `<span class="tag prealert">💤 ${fmtTs(r.snoozedUntil)}</span>` : ""}
+        </div>` : ""}`;
     body.addEventListener("click", () => (selectMode ? toggleSelect(r.id) : openEdit(r.id)));
     attachLongPress(li, r.id);
+    attachSwipe(wrap, li, r.id);
 
     // Right side: Start/End action (hidden while multi-selecting)
     const side = document.createElement("div");
@@ -344,7 +457,8 @@ function renderTimeline() {
     }
 
     li.append(check, body, side);
-    list.appendChild(li);
+    wrap.appendChild(li);
+    list.appendChild(wrap);
   });
 }
 
@@ -360,9 +474,11 @@ function actualLine(r) {
 }
 
 function renderCompletion() {
-  const total = state.reminders.length;
-  const done = state.reminders.filter((r) => r.status === "done").length;
-  const skipped = state.reminders.filter((r) => r.status === "skipped").length;
+  // Count only what applies today so the counter is meaningful.
+  const today = todaysReminders();
+  const total = today.length;
+  const done = today.filter((r) => r.status === "done").length;
+  const skipped = today.filter((r) => r.status === "skipped").length;
   $("completionPct").textContent = !total ? "0/0 done"
     : skipped ? `${done}✓ · ${skipped}⤼ · ${total - done - skipped} left`
     : `${done}/${total} done`;
@@ -388,6 +504,15 @@ function populateColorSelect() {
   });
 }
 
+function setDaysUI(days) {
+  document.querySelectorAll("#fldDays button").forEach((b) => {
+    b.classList.toggle("on", days.includes(+b.dataset.d));
+  });
+}
+function getDaysUI() {
+  return Array.from(document.querySelectorAll("#fldDays button.on")).map((b) => +b.dataset.d);
+}
+
 function openEdit(id) {
   editingId = id;
   const r = state.reminders.find((x) => x.id === id);
@@ -396,6 +521,9 @@ function openEdit(id) {
   $("fldActivity").value = r.activity;
   $("fldDuration").value = r.duration || "";
   $("fldColor").value = COLORS[r.color] ? r.color : "gray";
+  $("fldNotes").value = r.notes || "";
+  $("fldPreAlert").value = String(r.preAlertMin || 0);
+  setDaysUI(r.days && r.days.length ? r.days : ALL_DAYS);
   $("fldNotify").checked = !!r.notificationEnabled;
   $("fldSound").checked = !!r.soundEnabled;
   $("deleteReminderBtn").hidden = false;
@@ -410,6 +538,9 @@ function openAdd() {
   $("fldActivity").value = "";
   $("fldDuration").value = "";
   $("fldColor").value = "blue";
+  $("fldNotes").value = "";
+  $("fldPreAlert").value = "0";
+  setDaysUI(ALL_DAYS);
   $("fldNotify").checked = true;
   $("fldSound").checked = true;
   $("deleteReminderBtn").hidden = true;
@@ -419,18 +550,25 @@ function openAdd() {
 
 function submitEdit(e) {
   e.preventDefault();
+  const days = getDaysUI();
   const data = {
     time: $("fldTime").value,
     activity: $("fldActivity").value.trim(),
     duration: $("fldDuration").value.trim(),
     color: $("fldColor").value,
+    notes: $("fldNotes").value.trim(),
+    preAlertMin: parseInt($("fldPreAlert").value, 10) || 0,
+    days: days.length ? days : ALL_DAYS.slice(), // empty = every day
     notificationEnabled: $("fldNotify").checked,
     soundEnabled: $("fldSound").checked,
   };
   if (!data.time || !data.activity) return;
 
   if (editingId == null) {
-    state.reminders.push(Object.assign({ id: genId(), status: "upcoming", startedAt: null, endedAt: null }, data));
+    state.reminders.push(Object.assign(
+      { id: genId(), status: "upcoming", startedAt: null, endedAt: null, snoozedUntil: null },
+      data
+    ));
   } else {
     const r = state.reminders.find((x) => x.id === editingId);
     Object.assign(r, data);
@@ -444,11 +582,19 @@ function submitEdit(e) {
 
 function deleteReminder() {
   if (editingId == null) return;
+  const removed = state.reminders.find((x) => x.id === editingId);
+  const idx = state.reminders.indexOf(removed);
   state.reminders = state.reminders.filter((x) => x.id !== editingId);
   saveState();
   render();
   hideModal("editModal");
-  toast("Deleted");
+  // Offer undo so an accidental delete is recoverable for a few seconds.
+  showUndo(`Deleted "${removed.activity}"`, () => {
+    state.reminders.splice(idx, 0, removed);
+    sortReminders();
+    saveState();
+    render();
+  });
 }
 
 // Checkbox quick-toggle: done ↔ upcoming (unchecking clears the tracked times).
@@ -497,11 +643,15 @@ function makeReminderFromTemplate(t) {
     activity: t.activity,
     duration: t.duration || "",
     color: COLORS[t.color] ? t.color : "gray",
+    notes: t.notes || "",
+    days: Array.isArray(t.days) && t.days.length ? t.days.slice() : ALL_DAYS.slice(),
+    preAlertMin: typeof t.preAlertMin === "number" ? t.preAlertMin : 0,
     notificationEnabled: true,
     soundEnabled: true,
     status: "upcoming",
     startedAt: null,
     endedAt: null,
+    snoozedUntil: null,
   };
 }
 
@@ -537,6 +687,8 @@ function applyTheme() {
 function openSettings() {
   $("setNotify").checked = state.prefs.notificationEnabled;
   $("setSound").checked = state.prefs.soundEnabled;
+  $("setDndStart").value = state.prefs.dndStart || "";
+  $("setDndEnd").value = state.prefs.dndEnd || "";
   applyTheme();
   showModal("settingsModal");
 }
@@ -642,36 +794,104 @@ function beep() {
   } catch (e) { /* audio not available */ }
 }
 
+// Show a notification via the SW registration so we can attach action
+// buttons ("Start", "Snooze 5", "Skip"). Chromium/Android renders them;
+// iOS Safari silently ignores actions but still shows the notification.
+async function showRichNotification(r, opts) {
+  const body = opts.body;
+  const tag = opts.tag || "reminder-" + r.id;
+  const useSW = "serviceWorker" in navigator;
+  if (useSW) {
+    try {
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (reg && reg.showNotification) {
+        await reg.showNotification(opts.title, {
+          body,
+          tag,
+          icon: "icons/icon-192.png",
+          badge: "icons/icon-192.png",
+          data: { id: r.id },
+          actions: [
+            { action: "start", title: "Start" },
+            { action: "snooze-5", title: "+5 min" },
+            { action: "skip", title: "Skip" },
+          ],
+        });
+        return;
+      }
+    } catch (e) { /* fall through to constructor */ }
+  }
+  if ("Notification" in window && Notification.permission === "granted") {
+    try { new Notification(opts.title, { body, tag, icon: "icons/icon-192.png" }); } catch (e) { /* ignore */ }
+  }
+}
+
 function fireReminder(r) {
-  // On-screen flash
+  // On-screen flash — always happens, even during DND.
   const card = $("nowCard");
   card.classList.remove("flash");
   void card.offsetWidth; // restart animation
   card.classList.add("flash");
 
-  // Skip noisy notifications for very long / sleep activities (smart notifications)
   const isSleep = /sleep/i.test(r.activity);
+  const silent = isSleep || isInDND();
 
-  if (state.prefs.notificationEnabled && "Notification" in window && Notification.permission === "granted" && !isSleep) {
-    try {
-      new Notification(r.activity, {
-        body: `${r.time}${r.duration ? " · " + r.duration : ""}`,
-        tag: "reminder-" + r.id,
-        icon: "icons/icon-192.png",
-      });
-    } catch (e) { /* ignore */ }
+  if (state.prefs.notificationEnabled && !silent) {
+    showRichNotification(r, {
+      title: r.activity,
+      body: `${r.time}${r.duration ? " · " + r.duration : ""}${r.notes ? " — " + r.notes.slice(0, 80) : ""}`,
+    });
   }
-  if (state.prefs.soundEnabled && r.soundEnabled && !isSleep) beep();
+  if (state.prefs.soundEnabled && r.soundEnabled && !silent) beep();
+}
+
+function firePreAlert(r) {
+  const silent = isInDND();
+  if (state.prefs.notificationEnabled && !silent) {
+    showRichNotification(r, {
+      title: `Coming up: ${r.activity}`,
+      body: `In ${r.preAlertMin} min at ${r.time}${r.duration ? " · " + r.duration : ""}`,
+      tag: "pre-" + r.id,
+    });
+  }
+  if (state.prefs.soundEnabled && r.soundEnabled && !silent) beep();
 }
 
 function checkDueReminders() {
   const now = nowMinutes();
+  const nowMs = Date.now();
   state.reminders.forEach((r) => {
     if (!r.notificationEnabled) return;
-    if (r.status === "done" || r.status === "skipped") return; // already handled
+    if (r.status === "done" || r.status === "skipped") return;
+    if (!appliesToday(r)) return;
+
+    // Snooze: re-fire once the snoozedUntil time arrives.
+    if (r.snoozedUntil && nowMs >= r.snoozedUntil) {
+      const key = r.id + "@snooze-" + r.snoozedUntil;
+      if (!firedToday.has(key)) {
+        firedToday.add(key);
+        fireReminder(r);
+        r.snoozedUntil = null;
+        saveState();
+      }
+      return;
+    }
+    if (r.snoozedUntil) return; // snoozed but not yet due — don't fire the scheduled one
+
     const t = toMinutes(r.time);
+
+    // Pre-alert: fire N min before the scheduled time.
+    if (r.preAlertMin > 0) {
+      const preT = t - r.preAlertMin;
+      const preKey = r.id + "@pre-" + preT;
+      if (now === preT && !firedToday.has(preKey)) {
+        firedToday.add(preKey);
+        firePreAlert(r);
+      }
+    }
+
+    // Main alert at scheduled time.
     const key = r.id + "@" + r.time;
-    // Fire within a 1-minute window of the scheduled time, once per day.
     if (now === t && !firedToday.has(key)) {
       firedToday.add(key);
       fireReminder(r);
@@ -679,14 +899,42 @@ function checkDueReminders() {
   });
 }
 
+// Snooze the current reminder by N minutes. Sets snoozedUntil which
+// checkDueReminders will pick up. Called by SW-action postMessage or in-app.
+function snoozeReminder(id, minutes) {
+  const r = state.reminders.find((x) => x.id === id);
+  if (!r) return;
+  r.snoozedUntil = Date.now() + minutes * 60000;
+  saveState();
+  render();
+  toast(`Snoozed ${minutes} min`);
+}
+
+// Skip via notification action.
+function skipReminder(id) {
+  const r = state.reminders.find((x) => x.id === id);
+  if (!r) return;
+  const prev = r.status;
+  r.status = "skipped";
+  saveState();
+  render();
+  showUndo(`Skipped "${r.activity}"`, () => { r.status = prev; saveState(); render(); });
+}
+
 /* ---------- 9. Midnight reset + tick loop ---------- */
 
 function maybeMidnightReset() {
   const today = todayStr();
   const last = localStorage.getItem(LS.lastReset);
+  if (last && last !== today) {
+    // Snapshot yesterday's results into history BEFORE we wipe them.
+    snapshotDay(last);
+  }
   if (last !== today) {
     // New day: reset every task to upcoming and clear the "already fired" tracker.
-    state.reminders.forEach((r) => { r.status = "upcoming"; r.startedAt = null; r.endedAt = null; });
+    state.reminders.forEach((r) => {
+      r.status = "upcoming"; r.startedAt = null; r.endedAt = null; r.snoozedUntil = null;
+    });
     firedToday = new Set();
     localStorage.setItem(LS.lastReset, today);
     saveState();
@@ -862,19 +1110,22 @@ function toggleSelect(id) {
 
 function bulkMark(status) {
   if (!selected.size) { toast("Nothing selected"); return; }
-  let n = 0;
+  const changed = [];
   selected.forEach((id) => {
     const r = findRem(id);
     if (r) {
+      changed.push({ r, prev: { status: r.status, startedAt: r.startedAt, endedAt: r.endedAt } });
       if (status === "done" && r.status === "started") r.endedAt = Date.now();
       r.status = status;
-      n++;
     }
   });
   vibrate();
   saveState();
   exitSelectMode(); // also renders
-  toast(`${n} marked ${status === "done" ? "done" : "skipped"}`);
+  showUndo(`${changed.length} marked ${status === "done" ? "done" : "skipped"}`, () => {
+    changed.forEach(({ r, prev }) => Object.assign(r, prev));
+    saveState(); render();
+  });
 }
 
 // Long-press a task card to enter selection mode (standard mobile pattern).
@@ -890,6 +1141,287 @@ function attachLongPress(el, id) {
     el.addEventListener(ev, () => clearTimeout(timer)));
 }
 
+/* ---------- History + streaks ---------- */
+
+function historyLoad() {
+  try { return JSON.parse(localStorage.getItem(LS.history) || "{}") || {}; }
+  catch (e) { return {}; }
+}
+function historySave(h) { localStorage.setItem(LS.history, JSON.stringify(h)); }
+
+// Save the finished state of `dateStr` to history and prune old entries.
+function snapshotDay(dateStr) {
+  const h = historyLoad();
+  h[dateStr] = state.reminders.filter((r) => appliesOn(r, new Date(dateStr).getDay())).map((r) => ({
+    id: r.id,
+    time: r.time,
+    activity: r.activity,
+    status: r.status === "started" ? "upcoming" : r.status, // a task still running at midnight counts as not done
+    startedAt: r.startedAt,
+    endedAt: r.endedAt,
+  }));
+  // Prune anything older than HISTORY_KEEP_DAYS.
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - HISTORY_KEEP_DAYS);
+  const cutoffStr = todayStr(cutoff);
+  Object.keys(h).forEach((k) => { if (k < cutoffStr) delete h[k]; });
+  historySave(h);
+}
+
+// Consecutive days ending yesterday where this reminder was scheduled AND done.
+// Days where the reminder wasn't scheduled at all don't break the streak.
+function computeStreak(id) {
+  const h = historyLoad();
+  let streak = 0;
+  const d = new Date();
+  d.setDate(d.getDate() - 1); // start from yesterday
+  for (let i = 0; i < HISTORY_KEEP_DAYS; i++) {
+    const day = h[todayStr(d)];
+    if (day) {
+      const rec = day.find((x) => x.id === id);
+      if (rec) {
+        if (rec.status === "done") streak++;
+        else break; // scheduled but not done → break
+      } // not in history for that day (wasn't scheduled) → skip without breaking
+    } else {
+      break; // no history for this day at all → stop counting
+    }
+    d.setDate(d.getDate() - 1);
+  }
+  return streak;
+}
+
+/* ---------- Undo ---------- */
+
+// Simple undo: one recent action is remembered and can be restored via the toast.
+let pendingUndo = null;
+let undoTimer = null;
+
+function showUndo(message, restore) {
+  pendingUndo = { message, restore };
+  clearTimeout(undoTimer);
+  const el = $("toast");
+  $("toastMsg").textContent = message;
+  $("toastUndo").hidden = false;
+  el.hidden = false;
+  undoTimer = setTimeout(() => {
+    el.hidden = true;
+    $("toastUndo").hidden = true;
+    pendingUndo = null;
+  }, 5000);
+}
+
+function doUndo() {
+  if (!pendingUndo) return;
+  const { restore } = pendingUndo;
+  pendingUndo = null;
+  clearTimeout(undoTimer);
+  $("toast").hidden = true;
+  $("toastUndo").hidden = true;
+  try { restore(); } catch (e) { /* ignore */ }
+  toast("Undone");
+}
+
+/* ---------- Swipe gestures ---------- */
+
+// Left swipe = delete, right swipe = mark done. Threshold-based with visual
+// reveal behind the row. Preserves existing tap-to-edit / long-press-select.
+const SWIPE_THRESHOLD = 80;
+
+function attachSwipe(wrap, row, id) {
+  let startX = 0, startY = 0, dx = 0, dragging = false, decided = false, direction = 0;
+  row.addEventListener("pointerdown", (e) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    startX = e.clientX; startY = e.clientY; dx = 0;
+    dragging = true; decided = false; direction = 0;
+  });
+  row.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    const mx = e.clientX - startX;
+    const my = e.clientY - startY;
+    if (!decided) {
+      if (Math.abs(mx) < 8 && Math.abs(my) < 8) return;
+      // Horizontal wins if it's clearly sideways
+      if (Math.abs(mx) > Math.abs(my) * 1.3) {
+        decided = true;
+        direction = mx > 0 ? 1 : -1;
+        row.style.transition = "none";
+      } else {
+        dragging = false; return; // vertical scroll — let the page handle it
+      }
+    }
+    dx = Math.max(-160, Math.min(160, mx));
+    row.style.transform = `translateX(${dx}px)`;
+  });
+  const finish = () => {
+    if (!dragging) return;
+    dragging = false;
+    row.style.transition = "transform 0.18s ease";
+    if (Math.abs(dx) >= SWIPE_THRESHOLD) {
+      // Commit the action.
+      const outX = direction > 0 ? window.innerWidth : -window.innerWidth;
+      row.style.transform = `translateX(${outX}px)`;
+      vibrate(20);
+      setTimeout(() => {
+        if (direction > 0) swipeMarkDone(id);
+        else swipeDelete(id);
+        // render() will replace the row entirely, so we don't need to reset transform
+      }, 150);
+    } else {
+      row.style.transform = "translateX(0)";
+    }
+    dx = 0;
+  };
+  row.addEventListener("pointerup", finish);
+  row.addEventListener("pointercancel", finish);
+  row.addEventListener("pointerleave", () => { if (dragging && decided) finish(); });
+}
+
+function swipeMarkDone(id) {
+  const r = state.reminders.find((x) => x.id === id);
+  if (!r) return;
+  const prev = { status: r.status, startedAt: r.startedAt, endedAt: r.endedAt };
+  if (r.status === "started") r.endedAt = Date.now();
+  r.status = "done";
+  saveState();
+  render();
+  showUndo(`Marked done: ${r.activity}`, () => { Object.assign(r, prev); saveState(); render(); });
+}
+
+function swipeDelete(id) {
+  const r = state.reminders.find((x) => x.id === id);
+  if (!r) return;
+  const idx = state.reminders.indexOf(r);
+  state.reminders.splice(idx, 1);
+  saveState();
+  render();
+  showUndo(`Deleted "${r.activity}"`, () => {
+    state.reminders.splice(idx, 0, r); sortReminders(); saveState(); render();
+  });
+}
+
+/* ---------- Weekly view ---------- */
+
+let weeklyTab = "plan";
+
+function openWeekly() {
+  weeklyTab = "plan";
+  document.querySelectorAll("#weeklyTabs .seg").forEach((b) =>
+    b.classList.toggle("active", b.dataset.tab === weeklyTab));
+  renderWeekly();
+  showModal("weeklyModal");
+}
+
+function renderWeekly() {
+  const body = $("weeklyBody");
+  body.innerHTML = "";
+  if (weeklyTab === "plan") {
+    // The next 7 days starting today.
+    const today = new Date();
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(today); d.setDate(d.getDate() + i);
+      body.appendChild(renderWeekDay(d, /*history*/ false));
+    }
+  } else {
+    // The last 7 days ending yesterday.
+    const h = historyLoad();
+    for (let i = 7; i >= 1; i--) {
+      const d = new Date(); d.setDate(d.getDate() - i);
+      body.appendChild(renderWeekDay(d, /*history*/ true, h));
+    }
+    body.appendChild(renderStreakList());
+  }
+}
+
+function renderWeekDay(date, isHistory, h) {
+  const box = document.createElement("div");
+  box.className = "week-day";
+  const dow = date.getDay();
+  const isToday = todayStr(date) === todayStr();
+  const label = `${DAY_SHORT[dow]} ${date.getDate()}/${date.getMonth() + 1}` + (isToday ? " · today" : "");
+
+  const head = document.createElement("div");
+  head.className = "week-day-head";
+  head.innerHTML = `<span class="week-day-title${isToday ? " today" : ""}">${label}</span><span class="week-day-stat" id="stat-${date.getTime()}"></span>`;
+  box.appendChild(head);
+
+  let items;
+  if (isHistory) {
+    items = (h[todayStr(date)] || []).slice().sort((a, b) => a.time.localeCompare(b.time));
+  } else {
+    items = state.reminders.filter((r) => appliesOn(r, dow));
+  }
+  if (!items.length) {
+    const p = document.createElement("div");
+    p.className = "week-empty";
+    p.textContent = isHistory ? "No history recorded." : "Nothing scheduled.";
+    box.appendChild(p);
+    return box;
+  }
+  let done = 0, skipped = 0;
+  items.forEach((r) => {
+    const row = document.createElement("div");
+    row.className = "week-item"
+      + (isHistory && r.status === "done" ? " done" : "")
+      + (isHistory && r.status === "skipped" ? " skipped" : "");
+    row.style.setProperty("--rc", COLORS[r.color || "gray"] || COLORS.gray);
+    const suffix = isHistory && r.startedAt
+      ? ` · ${fmtTs(r.startedAt)}${r.endedAt ? "–" + fmtTs(r.endedAt) : ""}`
+      : "";
+    row.innerHTML = `<span class="week-time">${r.time}</span><span>${escapeHtml(r.activity)}${suffix}</span>`;
+    box.appendChild(row);
+    if (r.status === "done") done++;
+    if (r.status === "skipped") skipped++;
+  });
+  const stat = head.querySelector(".week-day-stat");
+  if (isHistory) stat.textContent = `${done}/${items.length}`;
+  else stat.textContent = `${items.length} planned`;
+  return box;
+}
+
+function renderStreakList() {
+  const wrap = document.createElement("div");
+  wrap.className = "streak-list";
+  const heading = document.createElement("div");
+  heading.className = "section-label";
+  heading.textContent = "Active streaks";
+  wrap.appendChild(heading);
+  let any = false;
+  state.reminders.forEach((r) => {
+    const s = computeStreak(r.id);
+    if (s < 2) return;
+    any = true;
+    const row = document.createElement("div");
+    row.className = "streak-item";
+    row.innerHTML = `<span>${escapeHtml(r.activity)}</span><b>🔥 ${s} days</b>`;
+    wrap.appendChild(row);
+  });
+  if (!any) {
+    const empty = document.createElement("div");
+    empty.className = "week-empty";
+    empty.textContent = "No streaks yet — history builds up as you use the app.";
+    wrap.appendChild(empty);
+  }
+  return wrap;
+}
+
+/* ---------- Service worker: incoming notification-action messages ---------- */
+
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.addEventListener("message", (event) => {
+    const msg = event.data || {};
+    if (msg.type !== "notificationAction") return;
+    const r = state.reminders.find((x) => x.id === msg.id);
+    if (!r) return;
+    if (msg.action === "start") startTask(r.id);
+    else if (msg.action === "skip") skipReminder(r.id);
+    else if (msg.action && msg.action.startsWith("snooze-")) {
+      const mins = parseInt(msg.action.split("-")[1], 10) || 5;
+      snoozeReminder(r.id, mins);
+    }
+  });
+}
+
 /* ---------- Modal + toast helpers ---------- */
 
 function showModal(id) { $(id).hidden = false; }
@@ -898,7 +1430,9 @@ function hideModal(id) { $(id).hidden = true; }
 let toastTimer = null;
 function toast(msg) {
   const el = $("toast");
-  el.textContent = msg;
+  $("toastMsg").textContent = msg;
+  $("toastUndo").hidden = true;
+  pendingUndo = null;
   el.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { el.hidden = true; }, 2000);
@@ -934,6 +1468,34 @@ function wireEvents() {
 
   $("setNotify").addEventListener("change", (e) => setNotifications(e.target.checked));
   $("setSound").addEventListener("change", (e) => { state.prefs.soundEnabled = e.target.checked; saveState(); });
+
+  // Do Not Disturb window
+  $("setDndStart").addEventListener("change", (e) => { state.prefs.dndStart = e.target.value || null; saveState(); });
+  $("setDndEnd").addEventListener("change", (e) => { state.prefs.dndEnd = e.target.value || null; saveState(); });
+  $("setDndClear").addEventListener("click", () => {
+    state.prefs.dndStart = null; state.prefs.dndEnd = null;
+    $("setDndStart").value = ""; $("setDndEnd").value = ""; saveState(); toast("DND off");
+  });
+
+  // Days-of-week picker toggles
+  document.querySelectorAll("#fldDays button").forEach((b) => {
+    b.addEventListener("click", () => b.classList.toggle("on"));
+  });
+
+  // Weekly view
+  $("weeklyBtn").addEventListener("click", openWeekly);
+  $("closeWeeklyBtn").addEventListener("click", () => hideModal("weeklyModal"));
+  document.querySelectorAll("#weeklyTabs .seg").forEach((b) => {
+    b.addEventListener("click", () => {
+      weeklyTab = b.dataset.tab;
+      document.querySelectorAll("#weeklyTabs .seg").forEach((x) =>
+        x.classList.toggle("active", x === b));
+      renderWeekly();
+    });
+  });
+
+  // Undo button in the toast
+  $("toastUndo").addEventListener("click", doUndo);
 
   $("exportBtn").addEventListener("click", exportSchedule);
   $("importBtn").addEventListener("click", () => $("importFile").click());

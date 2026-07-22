@@ -468,3 +468,187 @@ html, body {
   font-size: 15px;
 }
 .summary-row:last-child { border-bottom: none; }
+
+/* ---------- Tier 1 + 2 additions ---------- */
+
+/* Notes textarea */
+.field textarea {
+  width: 100%;
+  padding: 10px 12px;
+  font-size: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: inherit;
+  resize: vertical;
+  min-height: 44px;
+}
+
+/* Day-of-week pill picker */
+.days-picker {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 6px;
+}
+.days-picker button {
+  padding: 10px 0;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.days-picker button.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* Timeline row: end-time, notes preview, days badge, overlap flag, streak badge */
+.reminder-endtime { font-size: 12px; color: var(--text-dim); font-weight: 600; }
+.reminder-notes {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+.reminder-tags {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+.tag {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.tag.days { background: var(--surface-2); color: var(--text-dim); border: 1px solid var(--border); }
+.tag.overlap { background: #f59e0b; color: #000; }
+.tag.streak { background: var(--accent); color: #fff; }
+.tag.prealert { background: var(--surface-2); color: var(--accent); border: 1px solid var(--accent); }
+
+/* DND setting */
+.setting-hint { font-size: 12px; color: var(--text-dim); margin: 0 0 8px; }
+.dnd-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.dnd-row label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+}
+.dnd-row input[type="time"] {
+  padding: 8px 10px;
+  font-size: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+/* Weekly view */
+.modal.wide { max-width: 700px; }
+.weekly-body { margin: 14px 0; max-height: 55vh; overflow-y: auto; }
+.week-day {
+  border-top: 1px solid var(--border);
+  padding: 10px 0 8px;
+}
+.week-day:first-child { border-top: none; padding-top: 4px; }
+.week-day-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+.week-day-title { font-size: 13px; font-weight: 700; }
+.week-day-title.today { color: var(--accent); }
+.week-day-stat { font-size: 12px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.week-item {
+  display: flex;
+  gap: 10px;
+  padding: 4px 0;
+  font-size: 13px;
+  border-left: 3px solid var(--rc, var(--accent));
+  padding-left: 8px;
+  margin: 2px 0;
+}
+.week-item.done { opacity: 0.55; text-decoration: line-through; }
+.week-item.skipped { opacity: 0.45; font-style: italic; }
+.week-time { min-width: 44px; font-variant-numeric: tabular-nums; font-weight: 600; }
+.week-empty { color: var(--text-dim); font-size: 13px; font-style: italic; padding: 4px 0; }
+
+/* Streaks summary in history tab */
+.streak-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.streak-item {
+  display: flex;
+  justify-content: space-between;
+  font-size: 14px;
+  padding: 4px 0;
+}
+.streak-item b { font-variant-numeric: tabular-nums; }
+
+/* Swipe: two action layers behind the row + the row itself translates */
+.reminder-wrap {
+  position: relative;
+  overflow: hidden;
+  border-radius: 12px;
+  margin-bottom: 8px;
+  touch-action: pan-y;
+}
+.reminder-wrap .reminder { margin-bottom: 0; will-change: transform; user-select: none; }
+.swipe-action {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 96px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 14px;
+  color: #fff;
+  pointer-events: none;
+}
+.swipe-action.done { left: 0; background: var(--accent); border-radius: 12px 0 0 12px; }
+.swipe-action.delete { right: 0; background: var(--danger); border-radius: 0 12px 12px 0; }
+
+/* Toast upgraded with an inline undo button */
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.toast button {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-weight: 800;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+.toast button[hidden] { display: none; }

@@ -4,7 +4,7 @@
    clients to pick up the new version.
    ============================================================ */
 
-const CACHE_VERSION = "daily-reminder-v2";
+const CACHE_VERSION = "daily-reminder-v3";
 const ASSETS = [
   ".",
   "index.html",
@@ -32,6 +32,27 @@ self.addEventListener("activate", (event) => {
       Promise.all(keys.filter((k) => k !== CACHE_VERSION).map((k) => caches.delete(k)))
     ).then(() => self.clients.claim())
   );
+});
+
+// When a user taps the notification (body or an action button), focus an
+// existing app window (or open one) and forward the action to the client
+// via postMessage. The client handles Start/Snooze/Skip in its own state.
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const action = event.action || "open";
+  const data = event.notification.data || {};
+  event.waitUntil((async () => {
+    const clients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    let client = clients[0];
+    if (client) {
+      try { await client.focus(); } catch (e) { /* ignore */ }
+    } else {
+      client = await self.clients.openWindow("./");
+    }
+    if (client && action !== "open") {
+      try { client.postMessage({ type: "notificationAction", action, id: data.id }); } catch (e) { /* ignore */ }
+    }
+  })());
 });
 
 // Cache-first for same-origin GETs, with a network fallback that also

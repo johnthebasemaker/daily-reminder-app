@@ -64,7 +64,8 @@
   <!-- ============ BOTTOM ACTION BAR ============ -->
   <nav class="action-bar" id="mainBar">
     <button class="action-btn primary" id="addBtn">+ Add</button>
-    <button class="action-btn" id="templatesBtn">Templates</button>
+    <button class="action-btn" id="weeklyBtn">Week</button>
+    <button class="action-btn" id="templatesBtn">Tmpl</button>
     <button class="action-btn" id="resetChecksBtn">Reset&nbsp;✓</button>
   </nav>
 
@@ -95,6 +96,31 @@
         <label class="field">
           <span>Color</span>
           <select id="fldColor"></select>
+        </label>
+        <div class="field">
+          <span>Days</span>
+          <div class="days-picker" id="fldDays" role="group" aria-label="Days of week">
+            <button type="button" data-d="1">M</button>
+            <button type="button" data-d="2">T</button>
+            <button type="button" data-d="3">W</button>
+            <button type="button" data-d="4">T</button>
+            <button type="button" data-d="5">F</button>
+            <button type="button" data-d="6">S</button>
+            <button type="button" data-d="0">S</button>
+          </div>
+        </div>
+        <label class="field">
+          <span>Notes <em>(optional)</em></span>
+          <textarea id="fldNotes" placeholder="Anything to remember — a scripture reference, a grocery list, a link…" maxlength="500" rows="2"></textarea>
+        </label>
+        <label class="field">
+          <span>Pre-alert</span>
+          <select id="fldPreAlert">
+            <option value="0">Off</option>
+            <option value="5">5 min before</option>
+            <option value="10">10 min before</option>
+            <option value="15">15 min before</option>
+          </select>
         </label>
         <div class="field-row">
           <label class="toggle">
@@ -153,6 +179,16 @@
       </label>
 
       <div class="setting-group">
+        <span class="setting-label">Do Not Disturb</span>
+        <p class="setting-hint">Silence notifications and sound during this window. Useful for overnight sleep.</p>
+        <div class="dnd-row">
+          <label>From <input type="time" id="setDndStart" /></label>
+          <label>To <input type="time" id="setDndEnd" /></label>
+          <button type="button" class="mini-btn" id="setDndClear">Off</button>
+        </div>
+      </div>
+
+      <div class="setting-group">
         <span class="setting-label">Schedule</span>
         <div class="btn-grid">
           <button class="action-btn" id="exportBtn">Export JSON</button>
@@ -199,6 +235,22 @@
     </div>
   </div>
 
+  <!-- ============ WEEKLY VIEW ============ -->
+  <div class="modal-backdrop" id="weeklyModal" hidden>
+    <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="weeklyTitle">
+      <h2 id="weeklyTitle" class="modal-title">Weekly view</h2>
+      <div class="segmented" id="weeklyTabs">
+        <button class="seg active" data-tab="plan">This week's plan</button>
+        <button class="seg" data-tab="history">Last 7 days</button>
+      </div>
+      <div class="weekly-body" id="weeklyBody"></div>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button type="button" class="action-btn" id="closeWeeklyBtn">Close</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ============ END-OF-DAY SUMMARY ============ -->
   <div class="modal-backdrop" id="summaryModal" hidden>
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="summaryTitle">
@@ -211,8 +263,11 @@
     </div>
   </div>
 
-  <!-- Lightweight toast for confirmations -->
-  <div class="toast" id="toast" hidden></div>
+  <!-- Lightweight toast for confirmations. Optional UNDO button. -->
+  <div class="toast" id="toast" hidden>
+    <span id="toastMsg"></span>
+    <button id="toastUndo" hidden>Undo</button>
+  </div>
 
   <script src="app.js"></script>
 </body>
