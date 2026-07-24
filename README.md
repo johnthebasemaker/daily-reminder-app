@@ -12,8 +12,20 @@ no framework. Just open `index.html`.
 ## Features
 
 > ⚠️ **Before every deploy:** bump `CACHE_VERSION` in `service-worker.js`
-> (currently `daily-reminder-v2`) whenever any file changes, or returning
+> (currently `daily-reminder-v4`) whenever any file changes, or returning
 > users will keep seeing the old cached version.
+
+- **Focus mode** — tap **Focus** while a task is running to enter a full-screen
+  distraction-free view with a huge activity name, live elapsed timer, planned
+  end-time, and your notes. Tap End (or Esc) to return.
+- **Full backup + restore** — Settings → *Backup all* downloads a single JSON
+  file with your schedule + 90-day history + preferences + custom templates.
+  *Import / restore* recognizes it and puts everything back.
+- **Save custom templates** — Settings → *Save as template* stores the current
+  schedule (name it whatever) and it shows up alongside KSA/Student/Office in
+  the Templates modal, with a ✕ to delete.
+- **12/24-hour clock** — Settings → *Time format* toggle (defaults to Auto,
+  which matches your browser locale).
 
 - **3 preset templates** — KSA 12-Hour Shift, Student, 9-to-5 Office (load & replace, or merge).
 - **Task flow (Start / End)** — tap **Start** when you begin a task and **End** when you finish;

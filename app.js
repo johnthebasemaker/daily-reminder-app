@@ -97,20 +97,31 @@ const LS = {
   prefs: "userPreferences",
   lastReset: "lastResetDate",
   history: "dailyHistory", // { "YYYY-MM-DD": [{id, time, activity, status, startedAt, endedAt}] }
+  custom: "customTemplates", // [{ name, desc, reminders: [{time, activity, ...}] }]
 };
 const HISTORY_KEEP_DAYS = 90;
+
+// Detect the user's browser locale preference for 12/24-hour clock.
+function detectTimeFormat() {
+  try {
+    const s = new Intl.DateTimeFormat(undefined, { hour: "numeric" }).format(new Date(2020, 0, 1, 13));
+    return /am|pm/i.test(s) ? "12" : "24";
+  } catch (e) { return "24"; }
+}
 
 /* ---------- 2. State + persistence ---------- */
 
 let state = {
   reminders: [],          // array of reminder objects
   templateName: "",       // name of currently-loaded template
+  customTemplates: [],    // user-saved schedules that appear alongside built-ins
   prefs: {
     theme: "auto",
     notificationEnabled: false,
     soundEnabled: true,
     dndStart: null,       // "HH:MM" or null; when set, alerts are silenced within window
     dndEnd: null,
+    timeFormat: "auto",   // "auto" | "12" | "24"
   },
 };
 
@@ -128,6 +139,11 @@ function loadState() {
   try {
     const p = JSON.parse(localStorage.getItem(LS.prefs) || "null");
     if (p && typeof p === "object") state.prefs = Object.assign(state.prefs, p);
+  } catch (e) { /* ignore */ }
+
+  try {
+    const c = JSON.parse(localStorage.getItem(LS.custom) || "null");
+    if (Array.isArray(c)) state.customTemplates = c;
   } catch (e) { /* ignore */ }
 
   // Migrate v1 records (boolean `completed`) to the richer status model:
@@ -157,6 +173,7 @@ function saveState() {
     localStorage.setItem(LS.reminders, JSON.stringify(state.reminders));
     localStorage.setItem(LS.template, state.templateName);
     localStorage.setItem(LS.prefs, JSON.stringify(state.prefs));
+    localStorage.setItem(LS.custom, JSON.stringify(state.customTemplates));
   }, 250);
 }
 
@@ -174,8 +191,27 @@ function toMinutes(hhmm) {
 function nowMinutes(d = new Date()) {
   return d.getHours() * 60 + d.getMinutes();
 }
+// Return the user's chosen clock format, resolving "auto" against browser locale.
+function activeTimeFormat() {
+  const p = state.prefs.timeFormat;
+  return p === "12" || p === "24" ? p : detectTimeFormat();
+}
+// Format an hh:mm pair in the user's preferred clock format.
+function fmtHM(h, m) {
+  if (activeTimeFormat() === "12") {
+    const ampm = h >= 12 ? "pm" : "am";
+    const h12 = ((h + 11) % 12) + 1;
+    return h12 + ":" + String(m).padStart(2, "0") + " " + ampm;
+  }
+  return String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0");
+}
 function fmtClock(d = new Date()) {
-  return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+  return fmtHM(d.getHours(), d.getMinutes());
+}
+// Same but from an "HH:MM" 24-hour string (what reminders store internally).
+function fmtStoredTime(hhmm) {
+  const [h, m] = hhmm.split(":").map(Number);
+  return fmtHM(h, m);
 }
 function todayStr(d = new Date()) {
   // Local YYYY-MM-DD (not UTC) so midnight reset matches the user's day
@@ -205,12 +241,12 @@ function appliesOn(r, dow) { return !r.days || !r.days.length || r.days.includes
 function appliesToday(r) { return appliesOn(r, dowToday()); }
 
 // Compute the end-time of a reminder from its start + parsed duration.
-// Returns "HH:MM" or null.
+// Returns a display string (respects 12/24-hour pref) or null.
 function endTimeStr(r) {
   const mins = parseDurationMin(r.duration);
   if (!mins) return null;
   const end = (toMinutes(r.time) + mins) % (24 * 60);
-  return String(Math.floor(end / 60)).padStart(2, "0") + ":" + String(end % 60).padStart(2, "0");
+  return fmtHM(Math.floor(end / 60), end % 60);
 }
 
 // A short human badge for the days-of-week (e.g. "Mon–Fri", "Weekends", "MWF").
@@ -291,7 +327,10 @@ function renderNow() {
   $("nowClock").textContent = fmtClock();
   const { current, upcoming } = computeCurrentAndNext();
   const running = runningTask();
+  $("nowActions").hidden = !running;
   $("nowEndBtn").hidden = !running;
+  $("nowFocusBtn").hidden = !running;
+  if (running && !$("focusOverlay").hidden) updateFocus(running);
 
   if (running) {
     // A task is actively being tracked — show actual elapsed time.
@@ -308,7 +347,7 @@ function renderNow() {
 
   if (!current) {
     $("nowActivity").textContent = upcoming.length ? "Nothing yet — first up soon" : "No activity right now";
-    $("nowMeta").textContent = upcoming.length ? `${upcoming[0].activity} at ${upcoming[0].time}` : "";
+    $("nowMeta").textContent = upcoming.length ? `${upcoming[0].activity} at ${fmtStoredTime(upcoming[0].time)}` : "";
     $("nowProgressFill").style.width = "0%";
     return;
   }
@@ -337,7 +376,7 @@ function renderNextUp() {
     li.className = "nextup-item";
     li.style.setProperty("--rc", COLORS[r.color] || COLORS.gray);
     li.innerHTML = `
-      <span class="nextup-time">${r.time}</span>
+      <span class="nextup-time">${fmtStoredTime(r.time)}</span>
       <span class="nextup-name">${escapeHtml(r.activity)}</span>
       <span class="nextup-in">${humanGap(toMinutes(r.time) - now)}</span>`;
     list.appendChild(li);
@@ -415,7 +454,7 @@ function renderTimeline() {
     const badge = daysBadge(r.days);
     body.innerHTML = `
       <div class="reminder-time">
-        ${r.time}${end ? ` <span class="reminder-endtime">→ ${end}</span>` : ""}
+        ${fmtStoredTime(r.time)}${end ? ` <span class="reminder-endtime">→ ${end}</span>` : ""}
         ${isCurrent ? '<span class="current-tag">now</span>' : ""}
         ${r.status === "started" ? '<span class="running-tag">running</span>' : ""}
       </div>
@@ -616,23 +655,36 @@ function quickToggle(id, checked) {
 
 /* ---------- 6. Templates ---------- */
 
+// Merged list: built-in templates first, then the user's custom templates.
+// Indexes into this list are what applyTemplate() and the DOM data-i use.
+function allTemplates() {
+  const custom = state.customTemplates.map((t) => Object.assign({}, t, { custom: true }));
+  return TEMPLATES.concat(custom);
+}
+
 function renderTemplateList() {
   const wrap = $("templateList");
   wrap.innerHTML = "";
-  TEMPLATES.forEach((tmpl, i) => {
+  allTemplates().forEach((tmpl, i) => {
     const card = document.createElement("div");
-    card.className = "template-card";
+    card.className = "template-card" + (tmpl.custom ? " custom" : "");
     card.innerHTML = `
-      <h3>${escapeHtml(tmpl.name)}</h3>
-      <p>${escapeHtml(tmpl.desc)} · ${tmpl.reminders.length} reminders</p>
+      <div class="tc-head">
+        <h3>${escapeHtml(tmpl.name)}${tmpl.custom ? " ★" : ""}</h3>
+        ${tmpl.custom ? `<button class="tc-delete" data-del="${escapeHtml(tmpl.name)}" title="Delete template">✕</button>` : ""}
+      </div>
+      <p>${escapeHtml(tmpl.desc || "")} · ${tmpl.reminders.length} reminders</p>
       <div class="tc-actions">
         <button class="action-btn primary" data-act="replace" data-i="${i}">Load &amp; Replace</button>
         <button class="action-btn" data-act="merge" data-i="${i}">Merge</button>
       </div>`;
     wrap.appendChild(card);
   });
-  wrap.querySelectorAll("button").forEach((btn) => {
+  wrap.querySelectorAll("button[data-act]").forEach((btn) => {
     btn.addEventListener("click", () => applyTemplate(+btn.dataset.i, btn.dataset.act));
+  });
+  wrap.querySelectorAll("button[data-del]").forEach((btn) => {
+    btn.addEventListener("click", () => deleteCustomTemplate(btn.dataset.del));
   });
 }
 
@@ -656,7 +708,8 @@ function makeReminderFromTemplate(t) {
 }
 
 function applyTemplate(index, mode) {
-  const tmpl = TEMPLATES[index];
+  const tmpl = allTemplates()[index];
+  if (!tmpl) return;
   const fresh = tmpl.reminders.map(makeReminderFromTemplate);
   if (mode === "replace") {
     state.reminders = fresh;
@@ -690,7 +743,15 @@ function openSettings() {
   $("setDndStart").value = state.prefs.dndStart || "";
   $("setDndEnd").value = state.prefs.dndEnd || "";
   applyTheme();
+  applyTimeFormat();
   showModal("settingsModal");
+}
+
+// Reflect the current time-format pref on the segmented control.
+function applyTimeFormat() {
+  const f = state.prefs.timeFormat || "auto";
+  document.querySelectorAll("#timeFmtSegmented .seg").forEach((b) =>
+    b.classList.toggle("active", b.dataset.fmt === f));
 }
 
 async function setNotifications(on) {
@@ -706,26 +767,76 @@ async function setNotifications(on) {
   saveState();
 }
 
-function exportSchedule() {
-  const payload = { name: state.templateName || "My Schedule", reminders: state.reminders };
+// Download a file with the given filename and JSON payload.
+function downloadJSON(filename, payload) {
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "daily-schedule.json";
+  a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
-  toast("Exported JSON");
 }
 
+// Just the current schedule (portable — same format Import understands).
+function exportSchedule() {
+  downloadJSON("daily-schedule.json", {
+    name: state.templateName || "My Schedule",
+    reminders: state.reminders,
+  });
+  toast("Schedule downloaded");
+}
+
+// Full backup: schedule + all history + preferences + custom templates.
+// Wrapped in an envelope so Import can recognize it as a "backup" vs plain schedule.
+function backupAll() {
+  const payload = {
+    type: "daily-reminder-backup",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    schedule: {
+      name: state.templateName || "My Schedule",
+      reminders: state.reminders,
+    },
+    history: historyLoad(),
+    prefs: state.prefs,
+    customTemplates: state.customTemplates,
+  };
+  const dateStr = todayStr();
+  downloadJSON(`daily-reminder-backup-${dateStr}.json`, payload);
+  const histDays = Object.keys(payload.history).length;
+  toast(`Backup saved (${state.reminders.length} tasks, ${histDays} days of history)`);
+}
+
+// Import handles both a plain schedule OR a full backup envelope.
 function importSchedule(file) {
   const reader = new FileReader();
   reader.onload = () => {
     try {
       const data = JSON.parse(reader.result);
+      if (data && data.type === "daily-reminder-backup") {
+        // Full-backup restore
+        if (!confirm("Restore full backup? This overwrites your current schedule, history, preferences, and custom templates.")) return;
+        if (data.schedule && Array.isArray(data.schedule.reminders)) {
+          state.reminders = data.schedule.reminders.map(makeReminderFromTemplate);
+          state.templateName = data.schedule.name || "Restored";
+        }
+        if (data.history && typeof data.history === "object") historySave(data.history);
+        if (data.prefs && typeof data.prefs === "object") state.prefs = Object.assign(state.prefs, data.prefs);
+        if (Array.isArray(data.customTemplates)) state.customTemplates = data.customTemplates;
+        sortReminders();
+        saveState();
+        render();
+        applyTheme();
+        hideModal("settingsModal");
+        const histDays = Object.keys(data.history || {}).length;
+        toast(`Restored (${state.reminders.length} tasks, ${histDays} days of history)`);
+        return;
+      }
+      // Plain schedule import
       const arr = Array.isArray(data) ? data : data.reminders;
       if (!Array.isArray(arr)) throw new Error("bad");
-      state.reminders = arr.map((t) => makeReminderFromTemplate(t));
+      state.reminders = arr.map(makeReminderFromTemplate);
       state.templateName = (data && data.name) || "Imported";
       sortReminders();
       saveState();
@@ -737,6 +848,38 @@ function importSchedule(file) {
     }
   };
   reader.readAsText(file);
+}
+
+// Save the current schedule as a reusable custom template. Prompts for a name.
+function saveScheduleAsTemplate() {
+  if (!state.reminders.length) { toast("Nothing to save"); return; }
+  const suggested = state.templateName || "My Schedule";
+  const name = (window.prompt("Name this template:", suggested) || "").trim();
+  if (!name) return;
+  // Overwrite an existing same-name template if the user confirms.
+  const existing = state.customTemplates.findIndex((t) => t.name === name);
+  if (existing >= 0 && !confirm(`Replace existing template "${name}"?`)) return;
+  const tmpl = {
+    name,
+    desc: `Saved ${todayStr()}`,
+    custom: true,
+    reminders: state.reminders.map((r) => ({
+      time: r.time, activity: r.activity, duration: r.duration, color: r.color,
+      notes: r.notes, days: r.days, preAlertMin: r.preAlertMin,
+    })),
+  };
+  if (existing >= 0) state.customTemplates[existing] = tmpl;
+  else state.customTemplates.push(tmpl);
+  saveState();
+  toast(`Saved template: ${name}`);
+}
+
+function deleteCustomTemplate(name) {
+  if (!confirm(`Delete template "${name}"?`)) return;
+  state.customTemplates = state.customTemplates.filter((t) => t.name !== name);
+  saveState();
+  renderTemplateList();
+  toast("Template deleted");
 }
 
 function shareLink() {
@@ -1368,7 +1511,7 @@ function renderWeekDay(date, isHistory, h) {
     const suffix = isHistory && r.startedAt
       ? ` · ${fmtTs(r.startedAt)}${r.endedAt ? "–" + fmtTs(r.endedAt) : ""}`
       : "";
-    row.innerHTML = `<span class="week-time">${r.time}</span><span>${escapeHtml(r.activity)}${suffix}</span>`;
+    row.innerHTML = `<span class="week-time">${fmtStoredTime(r.time)}</span><span>${escapeHtml(r.activity)}${suffix}</span>`;
     box.appendChild(row);
     if (r.status === "done") done++;
     if (r.status === "skipped") skipped++;
@@ -1403,6 +1546,31 @@ function renderStreakList() {
     wrap.appendChild(empty);
   }
   return wrap;
+}
+
+/* ---------- Focus mode ---------- */
+
+// Fullscreen distraction-free view of the currently running task. The now-card
+// stays in sync (renderNow() calls updateFocus while the overlay is open) so
+// we don't need a second interval.
+function openFocus() {
+  const r = runningTask();
+  if (!r) { toast("No task running"); return; }
+  updateFocus(r);
+  $("focusOverlay").hidden = false;
+}
+function closeFocus() { $("focusOverlay").hidden = true; }
+function updateFocus(r) {
+  $("focusClock").textContent = fmtClock();
+  $("focusActivity").textContent = r.activity;
+  $("focusElapsed").textContent = `${elapsedMin(r.startedAt)} min`;
+  const planned = parseDurationMin(r.duration);
+  const end = endTimeStr(r);
+  $("focusPlanned").textContent =
+    (r.duration ? `planned ${r.duration}` : "") +
+    (end ? ` · ends ${end}` : "") +
+    (planned ? ` · ${Math.max(0, planned - elapsedMin(r.startedAt))} min left` : "");
+  $("focusNotes").textContent = r.notes || "";
 }
 
 /* ---------- Service worker: incoming notification-action messages ---------- */
@@ -1498,10 +1666,34 @@ function wireEvents() {
   $("toastUndo").addEventListener("click", doUndo);
 
   $("exportBtn").addEventListener("click", exportSchedule);
+  $("backupBtn").addEventListener("click", backupAll);
+  $("saveTemplateBtn").addEventListener("click", saveScheduleAsTemplate);
   $("importBtn").addEventListener("click", () => $("importFile").click());
   $("importFile").addEventListener("change", (e) => { if (e.target.files[0]) importSchedule(e.target.files[0]); e.target.value = ""; });
   $("shareBtn").addEventListener("click", shareLink);
   $("wipeBtn").addEventListener("click", wipeAll);
+
+  // Time format segmented control
+  document.querySelectorAll("#timeFmtSegmented .seg").forEach((b) => {
+    b.addEventListener("click", () => {
+      state.prefs.timeFormat = b.dataset.fmt;
+      applyTimeFormat(); saveState();
+      // Re-render everywhere the time appears
+      lastTimelineSig = null; render();
+    });
+  });
+
+  // Focus mode
+  $("nowFocusBtn").addEventListener("click", openFocus);
+  $("focusCloseBtn").addEventListener("click", closeFocus);
+  $("focusEndBtn").addEventListener("click", () => {
+    const r = runningTask();
+    closeFocus();
+    if (r) endTask(r.id);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("focusOverlay").hidden) closeFocus();
+  });
 
   // Task-flow controls
   $("selectModeBtn").addEventListener("click", () => (selectMode ? exitSelectMode() : enterSelectMode()));

@@ -38,7 +38,10 @@
       <div class="now-activity" id="nowActivity">No activity right now</div>
       <div class="now-meta" id="nowMeta"></div>
       <div class="now-progressbar" aria-hidden="true"><div class="now-progressbar-fill" id="nowProgressFill"></div></div>
-      <button id="nowEndBtn" class="now-end" hidden>&#9632; End current task</button>
+      <div class="now-actions" id="nowActions" hidden>
+        <button id="nowFocusBtn" class="now-end secondary" hidden>Focus</button>
+        <button id="nowEndBtn" class="now-end" hidden>&#9632; End current task</button>
+      </div>
     </section>
 
     <!-- ============ NEXT UP: next 3 reminders ============ -->
@@ -169,6 +172,15 @@
         </div>
       </div>
 
+      <div class="setting-group">
+        <span class="setting-label">Time format</span>
+        <div class="segmented" id="timeFmtSegmented">
+          <button data-fmt="auto" class="seg active">Auto</button>
+          <button data-fmt="24" class="seg">24-hr</button>
+          <button data-fmt="12" class="seg">12-hr</button>
+        </div>
+      </div>
+
       <label class="toggle-row">
         <span>Enable notifications</span>
         <input type="checkbox" id="setNotify" />
@@ -191,8 +203,10 @@
       <div class="setting-group">
         <span class="setting-label">Schedule</span>
         <div class="btn-grid">
-          <button class="action-btn" id="exportBtn">Export JSON</button>
-          <button class="action-btn" id="importBtn">Import JSON</button>
+          <button class="action-btn" id="saveTemplateBtn">Save as template</button>
+          <button class="action-btn" id="exportBtn">Export schedule</button>
+          <button class="action-btn" id="backupBtn">Backup all (with history)</button>
+          <button class="action-btn" id="importBtn">Import / restore</button>
           <button class="action-btn" id="shareBtn">Share link</button>
           <button class="action-btn danger" id="wipeBtn">Reset all</button>
         </div>
@@ -206,6 +220,17 @@
         <button type="button" class="action-btn" id="closeSettingsBtn">Done</button>
       </div>
     </div>
+  </div>
+
+  <!-- ============ FOCUS MODE (fullscreen active-task view) ============ -->
+  <div class="focus-overlay" id="focusOverlay" hidden>
+    <button class="focus-close" id="focusCloseBtn" aria-label="Exit focus">✕</button>
+    <div class="focus-clock" id="focusClock">--:--</div>
+    <div class="focus-activity" id="focusActivity">—</div>
+    <div class="focus-elapsed" id="focusElapsed">0 min elapsed</div>
+    <div class="focus-planned" id="focusPlanned"></div>
+    <div class="focus-notes" id="focusNotes"></div>
+    <button class="focus-end" id="focusEndBtn">■ End task</button>
   </div>
 
   <!-- ============ CATCH-UP MODAL (missed earlier tasks) ============ -->
